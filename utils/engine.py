@@ -45,34 +45,46 @@ class EarlyStopping:
         torch.save(model.state_dict(), ckpt_path)
 
 
-def train_one_epoch(model,loader,criterion,optimizer):
+def train_one_epoch(model, loader, criterion, optimizer):
     
     model.train()
-    total_loss,correct,total = 0.0,0,0
+    total_loss, correct, total = 0.0, 0, 0
 
-    for images,labels in loader:
-        images , labels = images.to(DEVICE), labels.to(DEVICE)
+    for images, labels in loader:
+        images, labels = images.to(DEVICE), labels.to(DEVICE)
         optimizer.zero_grad()
+
         outputs = model(images)
-        loss = criterion(outputs, labels)
+
+        # InceptionV3 returns (main_logits, aux_logits) during training.
+        # All other models (VGG, ResNet, MobileNet, DenseNet) return a plain
+        # tensor so the else branch is always taken for them — no change.
+        if isinstance(outputs, tuple):
+            main_out, aux_out = outputs
+            loss    = criterion(main_out, labels) + 0.4 * criterion(aux_out, labels)
+            outputs = main_out
+        else:
+            loss = criterion(outputs, labels)
+
         loss.backward()
         optimizer.step()
 
         total_loss += loss.item() * images.size(0)
-        correct += (outputs.argmax(1) == labels).sum().item()
-        total += labels.size(0)
+        correct    += (outputs.argmax(1) == labels).sum().item()
+        total      += labels.size(0)
 
     return total_loss / total, correct / total
 
-def evaluate(model,loader,criterion):
+
+def evaluate(model, loader, criterion):
 
     model.eval()
-    total_loss,correct,total = 0.0,0,0
+    total_loss, correct, total = 0.0, 0, 0
     all_preds, all_labels = [], []
 
     with torch.no_grad():
-        for images,labels in loader:
-            images,labels = images.to(DEVICE), labels.to(DEVICE)
+        for images, labels in loader:
+            images, labels = images.to(DEVICE), labels.to(DEVICE)
             outputs = model(images)
             loss = criterion(outputs, labels)
 
@@ -83,24 +95,26 @@ def evaluate(model,loader,criterion):
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
     
-    return(total_loss / total, correct / total, np.array(all_preds), np.array(all_labels))
+    return (total_loss / total, correct / total, np.array(all_preds), np.array(all_labels))
 
 
-def train_model(model,model_name,train_loader,val_loader,class_names,epochs=EPOCHS,patience=5):
+def train_model(model, model_name, train_loader, val_loader, class_names, epochs=EPOCHS, patience=5):
+
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    ckpt = os.path.join(CHECKPOINT_DIR, f"{model_name}.pth")
+    ckpt         = os.path.join(CHECKPOINT_DIR, f"{model_name}.pth")
     history_path = os.path.join(CHECKPOINT_DIR, f"{model_name}_history.pt")
-    model = model.to(DEVICE)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
+
+    model          = model.to(DEVICE)
+    criterion      = nn.CrossEntropyLoss()
+    optimizer      = optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    scheduler      = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
     early_stopping = EarlyStopping(patience=patience, min_delta=0.001)
     best_acc = 0.0
     history = {
         "train_loss": [],
-        "train_acc": [],
-        "val_loss": [],
-        "val_acc": [],
+        "train_acc":  [],
+        "val_loss":   [],
+        "val_acc":    [],
     }
 
     print(f"\n{'='*60}")
@@ -108,8 +122,8 @@ def train_model(model,model_name,train_loader,val_loader,class_names,epochs=EPOC
     print(f"{'='*60}")
 
     for epoch in range(1, epochs + 1):
-        tr_loss,tr_acc = train_one_epoch(model, train_loader, criterion, optimizer)
-        val_loss,val_acc,_,_= evaluate(model, val_loader, criterion)
+        tr_loss, tr_acc         = train_one_epoch(model, train_loader, criterion, optimizer)
+        val_loss, val_acc, _, _ = evaluate(model, val_loader, criterion)
         scheduler.step(val_loss)
 
         history["train_loss"].append(tr_loss)
@@ -123,7 +137,6 @@ def train_model(model,model_name,train_loader,val_loader,class_names,epochs=EPOC
         
         if val_acc > best_acc:
             best_acc = val_acc
-          
             print(f"  Model saved with Val Acc: {best_acc:.4f}")
 
         early_stopping(val_loss, model, ckpt)
@@ -135,7 +148,7 @@ def train_model(model,model_name,train_loader,val_loader,class_names,epochs=EPOC
     torch.save(history, history_path)
     
     model.load_state_dict(torch.load(ckpt, map_location=DEVICE))
-    _,_,preds,labels = evaluate(model, val_loader, criterion)
+    _, _, preds, labels = evaluate(model, val_loader, criterion)
 
     print(f"\n── Classification Report ({model_name}) ──")
     print(classification_report(labels, preds,
@@ -143,4 +156,4 @@ def train_model(model,model_name,train_loader,val_loader,class_names,epochs=EPOC
     print(f"── Confusion Matrix ({model_name}) ──")
     print(confusion_matrix(labels, preds))
  
-    return model, best_acc
+    return model, best_acc, preds, labels
